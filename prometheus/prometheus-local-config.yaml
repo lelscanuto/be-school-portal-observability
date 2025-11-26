@@ -1,0 +1,12 @@
+global:
+  # How often Prometheus will scrape targets.
+  # This is mainly for self-scraping, as metrics are being PUSHED to it.
+  scrape_interval: 15s
+
+scrape_configs:
+  # This job scrapes Prometheus itself.
+  # It is useful for monitoring Prometheus's own performance and uptime.
+  - job_name: 'prometheus'
+    # By using 'localhost:9090', Prometheus scrapes itself within the container.
+    static_configs:
+      - targets: ['localhost:9090']

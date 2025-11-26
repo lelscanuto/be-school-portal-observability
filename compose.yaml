@@ -1,0 +1,133 @@
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: zookeeper
+    ports:
+      - '2181:2181'
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - app-net
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: kafka
+    ports:
+      - '9092:9092'
+      - '29092:29092'
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      # Use the 'kafka' service name for internal Docker communication
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'false'
+    depends_on:
+      - zookeeper
+    networks:
+      - app-net
+    healthcheck:
+      test: ["CMD", "sh", "-c", "nc -z localhost 29092 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.93.0
+    container_name: otel-collector
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    volumes:
+      # Path relative to the compose.yaml file
+      - ./otel/config/otel-config.yaml:/etc/otel/config.yaml
+    command: ["--config", "/etc/otel/config.yaml"]
+    networks:
+      - app-net
+    depends_on:
+      kafka:
+        condition: service_healthy
+      loki:
+        condition: service_started
+
+  # --- Loki Log Storage ---
+  loki:
+    image: grafana/loki:latest
+    container_name: loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./loki/config/loki-local-config.yaml:/etc/loki/local-config.yaml
+      # Renamed to match the declaration below: loki_data
+      - ~/loki-data:/loki
+    networks:
+      - app-net
+    healthcheck:
+      test: [ "CMD", "sh", "-c", "nc -z localhost 3100 || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    user: "10001:10001"
+
+  promtail:
+    image: grafana/promtail:latest
+    container_name: promtail
+    volumes:
+      - ./promtail/promtail-config.yaml:/etc/promtail/config.yaml
+    command: -config.file=/etc/promtail/config.yaml
+    depends_on:
+      kafka:
+        condition: service_healthy
+      loki:
+        condition: service_started
+    networks:
+      - app-net
+
+  # 📈 --- Prometheus Metrics Collector --- 📈
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus-local-config.yaml:/etc/prometheus/prometheus.yaml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yaml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-remote-write-receiver'
+    networks:
+      - app-net
+    depends_on:
+      otel-collector:
+        condition: service_started
+
+  # 📊 --- Grafana Visualization Dashboard --- 📊
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      # CHANGE THIS LINE: Use a named volume instead of a local path
+      - grafana_data:/var/lib/grafana
+    networks:
+      - app-net
+    depends_on:
+      prometheus:
+        condition: service_started
+      loki:
+        condition: service_started
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: password
+
+volumes:
+  grafana_data:
+    driver: local
+
+networks:
+  app-net:
+    driver: bridge
